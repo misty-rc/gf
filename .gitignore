@@ -15,3 +15,9 @@ go.work.sum
 
 # Environment
 .env
+
+# test
+test/
+
+# Internal docs
+SPEC.md
