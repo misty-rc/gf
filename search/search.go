@@ -21,47 +21,78 @@ type Options struct {
 }
 
 type parallelWalker struct {
-	opts    Options
-	glob    string // 正規化済みグロブ（部分一致変換済み）
-	re      *regexp.Regexp
-	results chan<- string
-	wg      sync.WaitGroup
-	sem     chan struct{} // goroutine 数の上限
+	opts      Options
+	patternFn func(name string) bool // パターンマッチ専用（型・拡張子を含まない）
+	extLower  string                 // 小文字化済み拡張子（EqualFold の代わりに ToLower で比較）
+	results   chan<- string
+	wg        sync.WaitGroup
+	sem       chan struct{}
 }
 
 // Run は root 以下を並行走査し、マッチしたパスを results チャネルに送信する。
-// ディレクトリごとに goroutine を起動して os.ReadDir を並列実行する。
 func Run(root string, opts Options, results chan<- string) error {
-	var re *regexp.Regexp
-	if opts.Regex && opts.Pattern != "" {
-		var err error
-		re, err = regexp.Compile(opts.Pattern)
-		if err != nil {
-			return err
-		}
+	patternFn, err := compilePattern(opts)
+	if err != nil {
+		return err
 	}
-
-	// グロブの事前正規化（ループ内で毎回変換しないよう）
-	glob := opts.Pattern
-	if !opts.Regex && glob != "" && !hasGlobChars(glob) {
-		glob = "*" + glob + "*"
-	}
-
-	// root をスラッシュ統一しておく（以後の子パスはすべてスラッシュで構築）
-	slashRoot := filepath.ToSlash(root)
 
 	w := &parallelWalker{
-		opts:    opts,
-		glob:    glob,
-		re:      re,
-		results: results,
-		sem:     make(chan struct{}, runtime.NumCPU()),
+		opts:      opts,
+		patternFn: patternFn,
+		extLower:  strings.ToLower(opts.Ext),
+		results:   results,
+		sem:       make(chan struct{}, runtime.NumCPU()),
 	}
 
 	w.wg.Add(1)
-	go w.walk(slashRoot, 0)
+	go w.walk(filepath.ToSlash(root), 0)
 	w.wg.Wait()
 	return nil
+}
+
+// compilePattern はパターン部分のマッチ関数を構築する。
+// 単純な glob（*.ext, prefix*, *contains*）は strings の fast path を使い、
+// path.Match の呼び出しコストを回避する。
+func compilePattern(opts Options) (func(string) bool, error) {
+	if opts.Pattern == "" {
+		return func(string) bool { return true }, nil
+	}
+	if opts.Regex {
+		re, err := regexp.Compile(opts.Pattern)
+		if err != nil {
+			return nil, err
+		}
+		return re.MatchString, nil
+	}
+
+	glob := opts.Pattern
+	if !hasGlobChars(glob) {
+		glob = "*" + glob + "*" // グロブ記号なし → 部分一致に変換
+	}
+
+	// *.suffix — HasSuffix で代替
+	if strings.HasPrefix(glob, "*") && !strings.ContainsAny(glob[1:], "*?[") {
+		suffix := glob[1:]
+		return func(name string) bool { return strings.HasSuffix(name, suffix) }, nil
+	}
+	// prefix.* — HasPrefix で代替
+	if strings.HasSuffix(glob, "*") && !strings.ContainsAny(glob[:len(glob)-1], "*?[") {
+		prefix := glob[:len(glob)-1]
+		return func(name string) bool { return strings.HasPrefix(name, prefix) }, nil
+	}
+	// *contains* — Contains で代替
+	if strings.HasPrefix(glob, "*") && strings.HasSuffix(glob, "*") {
+		inner := glob[1 : len(glob)-1]
+		if !strings.ContainsAny(inner, "*?[") {
+			return func(name string) bool { return strings.Contains(name, inner) }, nil
+		}
+	}
+
+	// 汎用グロブ（path.Match）
+	return func(name string) bool {
+		matched, err := path.Match(glob, name)
+		return err == nil && matched
+	}, nil
 }
 
 // walk は dirPath（スラッシュ区切り）以下を再帰的に処理する。
@@ -76,25 +107,22 @@ func (w *parallelWalker) walk(dirPath string, depth int) {
 	for _, e := range entries {
 		name := e.Name()
 
-		// 隠しファイル・ディレクトリの除外
 		if !w.opts.Hidden && isHidden(name) {
 			continue
 		}
 
-		// スラッシュで子パスを構築（filepath.Join + ToSlash の代わり）
-		childPath := dirPath + "/" + name
 		childDepth := depth + 1
 
 		if e.IsDir() {
 			if w.opts.MaxDepth > 0 && childDepth > w.opts.MaxDepth {
 				continue
 			}
-			// ディレクトリ自体もマッチ対象
-			if w.matches(e, name) {
+			// ディレクトリは再帰にも必要なので先にパスを構築
+			childPath := dirPath + "/" + name
+			if w.opts.Type != "f" && w.matchesName(name) {
 				w.results <- childPath
 			}
 			w.wg.Add(1)
-			// セマフォに空きがあれば goroutine、なければインライン実行
 			select {
 			case w.sem <- struct{}{}:
 				go func(p string, d int) {
@@ -108,51 +136,29 @@ func (w *parallelWalker) walk(dirPath string, depth int) {
 			if w.opts.MaxDepth > 0 && childDepth > w.opts.MaxDepth {
 				continue
 			}
-			if w.matches(e, name) {
-				w.results <- childPath
+			// ファイルはマッチした場合のみパスを構築（非マッチ分のアロケーションを削減）
+			if w.opts.Type != "d" && w.matchesName(name) {
+				w.results <- dirPath + "/" + name
 			}
 		}
 	}
 }
 
-func (w *parallelWalker) matches(e os.DirEntry, name string) bool {
-	// タイプフィルタ
-	switch w.opts.Type {
-	case "f":
-		if e.IsDir() {
-			return false
-		}
-	case "d":
-		if !e.IsDir() {
+// matchesName は拡張子フィルタとパターンマッチを適用する。
+func (w *parallelWalker) matchesName(name string) bool {
+	if w.extLower != "" {
+		ext := strings.ToLower(strings.TrimPrefix(path.Ext(name), "."))
+		if ext != w.extLower {
 			return false
 		}
 	}
-
-	// 拡張子フィルタ
-	if w.opts.Ext != "" {
-		ext := strings.TrimPrefix(path.Ext(name), ".")
-		if !strings.EqualFold(ext, w.opts.Ext) {
-			return false
-		}
-	}
-
-	// パターンマッチ
-	if w.opts.Pattern == "" {
-		return true
-	}
-	if w.opts.Regex {
-		return w.re.MatchString(name)
-	}
-	matched, err := path.Match(w.glob, name)
-	return err == nil && matched
+	return w.patternFn(name)
 }
 
-// hasGlobChars はパターンにグロブ特殊文字が含まれるか返す。
 func hasGlobChars(p string) bool {
 	return strings.ContainsAny(p, "*?[")
 }
 
-// isHidden は名前がドットで始まるかどうかを返す（クロスプラットフォーム簡易実装）。
 func isHidden(name string) bool {
 	return strings.HasPrefix(name, ".")
 }
