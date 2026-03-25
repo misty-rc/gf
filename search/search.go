@@ -49,7 +49,10 @@ func Run(root string, opts Options, results chan<- string) error {
 		}()
 	}
 
-	rootDepth := strings.Count(filepath.ToSlash(root), "/")
+	rootDepth := 0
+	if opts.MaxDepth > 0 {
+		rootDepth = strings.Count(filepath.ToSlash(root), "/")
+	}
 
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -94,6 +97,11 @@ type walkJob struct {
 	entry    fs.DirEntry
 }
 
+// hasGlobChars はパターンにグロブ特殊文字が含まれるか返す。
+func hasGlobChars(p string) bool {
+	return strings.ContainsAny(p, "*?[")
+}
+
 func matches(job walkJob, opts Options, re *regexp.Regexp) bool {
 	d := job.entry
 	name := d.Name()
@@ -125,7 +133,12 @@ func matches(job walkJob, opts Options, re *regexp.Regexp) bool {
 	if opts.Regex {
 		return re.MatchString(name)
 	}
-	matched, err := path.Match(opts.Pattern, name)
+	// グロブ特殊文字がない場合は部分一致（*pattern*）として扱う
+	glob := opts.Pattern
+	if !hasGlobChars(glob) {
+		glob = "*" + glob + "*"
+	}
+	matched, err := path.Match(glob, name)
 	return err == nil && matched
 }
 

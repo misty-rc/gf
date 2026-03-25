@@ -127,23 +127,19 @@ func main() {
 		errCh <- err
 	}()
 
+	var all []string
+	for p := range results {
+		all = append(all, p)
+	}
 	if *doSort {
-		var all []string
-		for p := range results {
-			all = append(all, p)
-		}
 		sort.Strings(all)
-		for _, p := range all {
-			fmt.Println(p)
-		}
-	} else {
-		for p := range results {
-			fmt.Println(p)
-		}
+	}
+	for _, p := range all {
+		fmt.Println(p)
 	}
 
 	if err := <-errCh; err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		os.Exit(2)
 	}
 }
