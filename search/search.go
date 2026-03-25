@@ -1,11 +1,13 @@
 package search
 
 import (
-	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 // Options は検索条件を表す。
@@ -18,8 +20,17 @@ type Options struct {
 	MaxDepth int    // 最大探索深さ（0=無制限）
 }
 
-// Run は root 以下を走査し、マッチしたパスを results チャネルに送信する。
-// マッチング処理は WalkDir コールバック内でインライン実行する。
+type parallelWalker struct {
+	opts    Options
+	glob    string // 正規化済みグロブ（部分一致変換済み）
+	re      *regexp.Regexp
+	results chan<- string
+	wg      sync.WaitGroup
+	sem     chan struct{} // goroutine 数の上限
+}
+
+// Run は root 以下を並行走査し、マッチしたパスを results チャネルに送信する。
+// ディレクトリごとに goroutine を起動して os.ReadDir を並列実行する。
 func Run(root string, opts Options, results chan<- string) error {
 	var re *regexp.Regexp
 	if opts.Regex && opts.Pattern != "" {
@@ -30,89 +41,115 @@ func Run(root string, opts Options, results chan<- string) error {
 		}
 	}
 
-	// グロブパターンの事前正規化（WalkDir内で毎回やらないよう）
+	// グロブの事前正規化（ループ内で毎回変換しないよう）
 	glob := opts.Pattern
 	if !opts.Regex && glob != "" && !hasGlobChars(glob) {
 		glob = "*" + glob + "*"
 	}
 
-	rootDepth := 0
-	if opts.MaxDepth > 0 {
-		rootDepth = strings.Count(filepath.ToSlash(root), "/")
+	// root をスラッシュ統一しておく（以後の子パスはすべてスラッシュで構築）
+	slashRoot := filepath.ToSlash(root)
+
+	w := &parallelWalker{
+		opts:    opts,
+		glob:    glob,
+		re:      re,
+		results: results,
+		sem:     make(chan struct{}, runtime.NumCPU()),
 	}
 
-	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			// アクセス権限エラーなどはスキップ
-			return nil
-		}
-		if p == root {
-			return nil
-		}
+	w.wg.Add(1)
+	go w.walk(slashRoot, 0)
+	w.wg.Wait()
+	return nil
+}
 
-		// 深さチェック
-		if opts.MaxDepth > 0 {
-			depth := strings.Count(filepath.ToSlash(p), "/") - rootDepth
-			if depth > opts.MaxDepth {
-				if d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-		}
+// walk は dirPath（スラッシュ区切り）以下を再帰的に処理する。
+func (w *parallelWalker) walk(dirPath string, depth int) {
+	defer w.wg.Done()
+
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return
+	}
+
+	for _, e := range entries {
+		name := e.Name()
 
 		// 隠しファイル・ディレクトリの除外
-		if !opts.Hidden && isHidden(d.Name()) {
-			if d.IsDir() {
-				return filepath.SkipDir
+		if !w.opts.Hidden && isHidden(name) {
+			continue
+		}
+
+		// スラッシュで子パスを構築（filepath.Join + ToSlash の代わり）
+		childPath := dirPath + "/" + name
+		childDepth := depth + 1
+
+		if e.IsDir() {
+			if w.opts.MaxDepth > 0 && childDepth > w.opts.MaxDepth {
+				continue
 			}
-			return nil
+			// ディレクトリ自体もマッチ対象
+			if w.matches(e, name) {
+				w.results <- childPath
+			}
+			w.wg.Add(1)
+			// セマフォに空きがあれば goroutine、なければインライン実行
+			select {
+			case w.sem <- struct{}{}:
+				go func(p string, d int) {
+					defer func() { <-w.sem }()
+					w.walk(p, d)
+				}(childPath, childDepth)
+			default:
+				w.walk(childPath, childDepth)
+			}
+		} else {
+			if w.opts.MaxDepth > 0 && childDepth > w.opts.MaxDepth {
+				continue
+			}
+			if w.matches(e, name) {
+				w.results <- childPath
+			}
 		}
-
-		if matches(d, opts, glob, re) {
-			results <- filepath.ToSlash(p)
-		}
-		return nil
-	})
+	}
 }
 
-// hasGlobChars はパターンにグロブ特殊文字が含まれるか返す。
-func hasGlobChars(p string) bool {
-	return strings.ContainsAny(p, "*?[")
-}
-
-func matches(d fs.DirEntry, opts Options, glob string, re *regexp.Regexp) bool {
-	name := d.Name()
-
+func (w *parallelWalker) matches(e os.DirEntry, name string) bool {
 	// タイプフィルタ
-	switch opts.Type {
+	switch w.opts.Type {
 	case "f":
-		if d.IsDir() {
+		if e.IsDir() {
 			return false
 		}
 	case "d":
-		if !d.IsDir() {
+		if !e.IsDir() {
 			return false
 		}
 	}
 
 	// 拡張子フィルタ
-	if opts.Ext != "" {
+	if w.opts.Ext != "" {
 		ext := strings.TrimPrefix(path.Ext(name), ".")
-		if !strings.EqualFold(ext, opts.Ext) {
+		if !strings.EqualFold(ext, w.opts.Ext) {
 			return false
 		}
 	}
 
 	// パターンマッチ
-	if opts.Pattern == "" {
+	if w.opts.Pattern == "" {
 		return true
 	}
-	if opts.Regex {
-		return re.MatchString(name)
+	if w.opts.Regex {
+		return w.re.MatchString(name)
 	}
-	matched, err := path.Match(glob, name)
+	matched, err := path.Match(w.glob, name)
 	return err == nil && matched
+}
+
+// hasGlobChars はパターンにグロブ特殊文字が含まれるか返す。
+func hasGlobChars(p string) bool {
+	return strings.ContainsAny(p, "*?[")
 }
 
 // isHidden は名前がドットで始まるかどうかを返す（クロスプラットフォーム簡易実装）。
