@@ -104,6 +104,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: --type must be 'f' or 'd'")
 		os.Exit(2)
 	}
+	if *maxDepth < 0 {
+		fmt.Fprintln(os.Stderr, "error: --depth must be non-negative")
+		os.Exit(2)
+	}
 
 	pattern := ""
 	root := "."

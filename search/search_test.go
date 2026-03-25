@@ -92,16 +92,15 @@ func runSearch(t *testing.T, root string, opts search.Options) []string {
 func TestGlob_NoSpecialChars_PartialMatch(t *testing.T) {
 	root := makeTestTree(t)
 	got := runSearch(t, root, search.Options{Pattern: "file"})
-	want := []string{"file.go", "file.txt", "hidden_file"} // .hidden_file はデフォルト除外
-	_ = want
-	// "file" を含む名前が部分一致すること
+	// "file" を含む名前が部分一致すること（hidden=false なので .hidden_file は除外）
+	// file.go, file.txt = 2件
 	for _, p := range got {
 		if !strings.Contains(filepath.Base(p), "file") {
 			t.Errorf("unexpected match: %s", p)
 		}
 	}
-	if len(got) == 0 {
-		t.Error("expected at least one match")
+	if len(got) != 2 {
+		t.Errorf("want 2, got %d: %v", len(got), got)
 	}
 }
 
@@ -337,14 +336,24 @@ func TestHidden_ExcludedByDefault(t *testing.T) {
 func TestHidden_Included(t *testing.T) {
 	root := makeTestTree(t)
 	got := runSearch(t, root, search.Options{Hidden: true})
-	var hiddenFound bool
+	// .hidden_file と .hidden_dir が含まれること（パス全体でチェック）
+	hiddenFile := false
+	hiddenDir := false
 	for _, p := range got {
-		if strings.HasPrefix(filepath.Base(p), ".") {
-			hiddenFound = true
+		for _, seg := range strings.Split(p, "/") {
+			if seg == ".hidden_file" {
+				hiddenFile = true
+			}
+			if seg == ".hidden_dir" {
+				hiddenDir = true
+			}
 		}
 	}
-	if !hiddenFound {
-		t.Error("expected hidden files to appear when Hidden=true")
+	if !hiddenFile {
+		t.Error("expected .hidden_file to appear when Hidden=true")
+	}
+	if !hiddenDir {
+		t.Error("expected .hidden_dir to appear when Hidden=true")
 	}
 }
 
@@ -412,6 +421,54 @@ func TestDepth_2(t *testing.T) {
 	}
 }
 
+// ---- MatchPath オプション ---------------------------------------------------
+
+func TestMatchPath_FilenameOnly(t *testing.T) {
+	// MatchPath=false（デフォルト）: pattern は名前のみに適用
+	root := makeTestTree(t)
+	got := runSearch(t, root, search.Options{Pattern: "sub", MatchPath: false})
+	// "sub" を含む名前: subdir, sub.go, sub.txt = 3件
+	if len(got) != 3 {
+		t.Errorf("want 3, got %d: %v", len(got), got)
+	}
+	for _, p := range got {
+		if !strings.Contains(filepath.Base(p), "sub") {
+			t.Errorf("name should contain 'sub': %s", p)
+		}
+	}
+}
+
+func TestMatchPath_FullPath(t *testing.T) {
+	// MatchPath=true: pattern をフルパスに適用
+	root := makeTestTree(t)
+	got := runSearch(t, root, search.Options{Pattern: "subdir", MatchPath: true})
+	// フルパスに "subdir" を含む: subdir, subdir/sub.go, subdir/sub.txt,
+	// subdir/deep, subdir/deep/deep.go = 5件
+	if len(got) != 5 {
+		t.Errorf("want 5, got %d: %v", len(got), got)
+	}
+	for _, p := range got {
+		if !strings.Contains(p, "subdir") {
+			t.Errorf("full path should contain 'subdir': %s", p)
+		}
+	}
+}
+
+func TestMatchPath_RegexOnFullPath(t *testing.T) {
+	// MatchPath=true + Regex: フルパスに正規表現を適用
+	root := makeTestTree(t)
+	// "subdir/deep" 以下のみマッチ
+	got := runSearch(t, root, search.Options{
+		Pattern:   `subdir/deep`,
+		Regex:     true,
+		MatchPath: true,
+	})
+	// subdir/deep (dir), subdir/deep/deep.go = 2件
+	if len(got) != 2 {
+		t.Errorf("want 2, got %d: %v", len(got), got)
+	}
+}
+
 // ---- パス形式 ----------------------------------------------------------------
 
 func TestPath_ForwardSlash(t *testing.T) {
@@ -431,33 +488,21 @@ func TestPath_ForwardSlash(t *testing.T) {
 // ---- エラーケース ------------------------------------------------------------
 
 func TestError_NonExistentRoot(t *testing.T) {
-	results := make(chan string, 256)
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- search.Run("/nonexistent/path/xyz", search.Options{}, results)
-		close(results)
-	}()
-	for range results {
+	// 仕様: 存在しない root は ReadDir エラー → 空結果、Run は nil を返す（サイレントスキップ）
+	got := runSearch(t, "/nonexistent/path/xyz", search.Options{})
+	if len(got) != 0 {
+		t.Errorf("want 0 results for nonexistent root, got %d", len(got))
 	}
-	// 存在しない root は ReadDir エラー → 空結果（エラーはスキップ扱い）
-	// Run 自体はエラーを返さないが、結果が0件になること
-	<-errCh
-	// パニックしないことを確認できれば十分
 }
 
 func TestError_RootIsFile(t *testing.T) {
+	// 仕様: ファイルを root に渡すと ReadDir エラー → 空結果、Run は nil を返す
 	root := makeTestTree(t)
-	filePath := filepath.Join(root, "file.go")
-	results := make(chan string, 256)
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- search.Run(filePath, search.Options{}, results)
-		close(results)
-	}()
-	for range results {
+	filePath := filepath.ToSlash(filepath.Join(root, "file.go"))
+	got := runSearch(t, filePath, search.Options{})
+	if len(got) != 0 {
+		t.Errorf("want 0 results when root is a file, got %d", len(got))
 	}
-	<-errCh
-	// ファイルを root に渡しても panic しないこと
 }
 
 // ---- 複合フィルタ ------------------------------------------------------------
