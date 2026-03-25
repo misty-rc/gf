@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
@@ -65,7 +66,7 @@ func main() {
 			flagArgs = append(flagArgs, a)
 			// 値付きフラグ（-t f 形式）は次の引数もフラグ引数として扱う
 			name := strings.TrimLeft(a, "-")
-			if idx := strings.IndexByte(name, '='); idx >= 0 {
+			if strings.Contains(name, "=") {
 				// -t=f 形式はそのまま
 			} else if !boolFlags[name] && i+1 < len(rawArgs) && (len(rawArgs[i+1]) == 0 || rawArgs[i+1][0] != '-') {
 				i++
@@ -123,7 +124,7 @@ func main() {
 		MaxDepth: *maxDepth,
 	}
 
-	results := make(chan string, 256)
+	results := make(chan string, 8192)
 	errCh := make(chan error, 1)
 
 	go func() {
@@ -132,15 +133,22 @@ func main() {
 		errCh <- err
 	}()
 
-	var all []string
-	for p := range results {
-		all = append(all, p)
-	}
+	w := bufio.NewWriterSize(os.Stdout, 1<<20) // 1MB 出力バッファ
+	defer w.Flush()
+
 	if *doSort {
+		var all []string
+		for p := range results {
+			all = append(all, p)
+		}
 		sort.Strings(all)
-	}
-	for _, p := range all {
-		fmt.Println(p)
+		for _, p := range all {
+			fmt.Fprintln(w, p)
+		}
+	} else {
+		for p := range results {
+			fmt.Fprintln(w, p)
+		}
 	}
 
 	if err := <-errCh; err != nil {

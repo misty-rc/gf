@@ -5,9 +5,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
-	"sync"
 )
 
 // Options は検索条件を表す。
@@ -20,8 +18,8 @@ type Options struct {
 	MaxDepth int    // 最大探索深さ（0=無制限）
 }
 
-// Run は root 以下を並行走査し、マッチしたパスを results チャネルに送信する。
-// 呼び出し元は results を読み切ってから関数が返るのを待つこと。
+// Run は root 以下を走査し、マッチしたパスを results チャネルに送信する。
+// マッチング処理は WalkDir コールバック内でインライン実行する。
 func Run(root string, opts Options, results chan<- string) error {
 	var re *regexp.Regexp
 	if opts.Regex && opts.Pattern != "" {
@@ -32,21 +30,10 @@ func Run(root string, opts Options, results chan<- string) error {
 		}
 	}
 
-	// worker pool
-	numWorkers := runtime.NumCPU()
-	jobs := make(chan walkJob, numWorkers*4)
-	var wg sync.WaitGroup
-
-	for range numWorkers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				if matches(job, opts, re) {
-					results <- filepath.ToSlash(job.fullPath)
-				}
-			}
-		}()
+	// グロブパターンの事前正規化（WalkDir内で毎回やらないよう）
+	glob := opts.Pattern
+	if !opts.Regex && glob != "" && !hasGlobChars(glob) {
+		glob = "*" + glob + "*"
 	}
 
 	rootDepth := 0
@@ -54,7 +41,7 @@ func Run(root string, opts Options, results chan<- string) error {
 		rootDepth = strings.Count(filepath.ToSlash(root), "/")
 	}
 
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// アクセス権限エラーなどはスキップ
 			return nil
@@ -82,19 +69,11 @@ func Run(root string, opts Options, results chan<- string) error {
 			return nil
 		}
 
-		jobs <- walkJob{fullPath: p, entry: d}
+		if matches(d, opts, glob, re) {
+			results <- filepath.ToSlash(p)
+		}
 		return nil
 	})
-
-	close(jobs)
-	wg.Wait()
-
-	return err
-}
-
-type walkJob struct {
-	fullPath string
-	entry    fs.DirEntry
 }
 
 // hasGlobChars はパターンにグロブ特殊文字が含まれるか返す。
@@ -102,8 +81,7 @@ func hasGlobChars(p string) bool {
 	return strings.ContainsAny(p, "*?[")
 }
 
-func matches(job walkJob, opts Options, re *regexp.Regexp) bool {
-	d := job.entry
+func matches(d fs.DirEntry, opts Options, glob string, re *regexp.Regexp) bool {
 	name := d.Name()
 
 	// タイプフィルタ
@@ -132,11 +110,6 @@ func matches(job walkJob, opts Options, re *regexp.Regexp) bool {
 	}
 	if opts.Regex {
 		return re.MatchString(name)
-	}
-	// グロブ特殊文字がない場合は部分一致（*pattern*）として扱う
-	glob := opts.Pattern
-	if !hasGlobChars(glob) {
-		glob = "*" + glob + "*"
 	}
 	matched, err := path.Match(glob, name)
 	return err == nil && matched
