@@ -23,6 +23,7 @@ Arguments:
 
 Options:
   -r, --regex         Treat pattern as regular expression
+  -p, --path          Match pattern against full path instead of filename only
   -t, --type  f|d     Filter by type: f=file, d=directory
   -e, --ext   EXT     Filter by file extension, without dot (e.g. go, png)
       --hidden        Include hidden files and directories (dot-prefixed)
@@ -32,6 +33,7 @@ Options:
 Examples:
   gf '*.go'                     # .go files (glob)
   gf main                       # files whose name contains "main"
+  gf -p ドールズ                # files under paths containing "ドールズ"
   gf -r '^test.*\.go$'          # regex: test*.go
   gf -t f -e go --sort ./src    # sorted .go files under src/
   gf --hidden --depth 2 .       # include hidden, max 2 levels deep
@@ -39,12 +41,13 @@ Examples:
 
 func main() {
 	var (
-		useRegex = flag.Bool("r", false, "")
-		fileType = flag.String("t", "", "")
-		ext      = flag.String("e", "", "")
-		hidden   = flag.Bool("hidden", false, "")
-		maxDepth = flag.Int("depth", 0, "")
-		doSort   = flag.Bool("sort", false, "")
+		useRegex  = flag.Bool("r", false, "")
+		matchPath = flag.Bool("p", false, "")
+		fileType  = flag.String("t", "", "")
+		ext       = flag.String("e", "", "")
+		hidden    = flag.Bool("hidden", false, "")
+		maxDepth  = flag.Int("depth", 0, "")
+		doSort    = flag.Bool("sort", false, "")
 	)
 
 	flag.CommandLine.Usage = func() {
@@ -53,6 +56,7 @@ func main() {
 
 	// long-form aliases
 	flag.BoolVar(useRegex, "regex", false, "")
+	flag.BoolVar(matchPath, "path", false, "")
 	flag.StringVar(fileType, "type", "", "")
 	flag.StringVar(ext, "ext", "", "")
 
@@ -129,12 +133,13 @@ func main() {
 	}
 
 	opts := search.Options{
-		Pattern:  pattern,
-		Regex:    *useRegex,
-		Type:     *fileType,
-		Ext:      *ext,
-		Hidden:   *hidden,
-		MaxDepth: *maxDepth,
+		Pattern:   pattern,
+		Regex:     *useRegex,
+		MatchPath: *matchPath,
+		Type:      *fileType,
+		Ext:       *ext,
+		Hidden:    *hidden,
+		MaxDepth:  *maxDepth,
 	}
 
 	results := make(chan string, 8192)

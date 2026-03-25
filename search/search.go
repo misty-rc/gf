@@ -12,12 +12,13 @@ import (
 
 // Options は検索条件を表す。
 type Options struct {
-	Pattern  string // グロブまたは正規表現パターン（空文字は全マッチ）
-	Regex    bool   // true のとき Pattern を正規表現として扱う
-	Type     string // "f"=ファイルのみ, "d"=ディレクトリのみ, ""=両方
-	Ext      string // 拡張子フィルタ（ドットなし。例: "go"）
-	Hidden   bool   // 隠しファイル・ディレクトリを含める
-	MaxDepth int    // 最大探索深さ（0=無制限）
+	Pattern   string // グロブまたは正規表現パターン（空文字は全マッチ）
+	Regex     bool   // true のとき Pattern を正規表現として扱う
+	MatchPath bool   // true のとき Pattern をフルパスに適用する（デフォルト: ファイル名のみ）
+	Type      string // "f"=ファイルのみ, "d"=ディレクトリのみ, ""=両方
+	Ext       string // 拡張子フィルタ（ドットなし。例: "go"）
+	Hidden    bool   // 隠しファイル・ディレクトリを含める
+	MaxDepth  int    // 最大探索深さ（0=無制限）
 }
 
 type parallelWalker struct {
@@ -119,7 +120,7 @@ func (w *parallelWalker) walk(dirPath string, depth int) {
 			}
 			// ディレクトリは再帰にも必要なので先にパスを構築
 			childPath := dirPath + "/" + name
-			if w.opts.Type != "f" && w.matchesName(name) {
+			if w.opts.Type != "f" && w.matches(name, childPath) {
 				w.results <- childPath
 			}
 			w.wg.Add(1)
@@ -136,21 +137,33 @@ func (w *parallelWalker) walk(dirPath string, depth int) {
 			if w.opts.MaxDepth > 0 && childDepth > w.opts.MaxDepth {
 				continue
 			}
-			// ファイルはマッチした場合のみパスを構築（非マッチ分のアロケーションを削減）
-			if w.opts.Type != "d" && w.matchesName(name) {
+			if w.opts.Type == "d" {
+				continue
+			}
+			// --path 時はパスが必要なので先に構築、それ以外はマッチ後に構築
+			if w.opts.MatchPath {
+				childPath := dirPath + "/" + name
+				if w.matches(name, childPath) {
+					w.results <- childPath
+				}
+			} else if w.matches(name, "") {
 				w.results <- dirPath + "/" + name
 			}
 		}
 	}
 }
 
-// matchesName は拡張子フィルタとパターンマッチを適用する。
-func (w *parallelWalker) matchesName(name string) bool {
+// matches は拡張子フィルタとパターンマッチを適用する。
+// MatchPath が true のとき pattern は fullPath に適用し、それ以外は name に適用する。
+func (w *parallelWalker) matches(name, fullPath string) bool {
 	if w.extLower != "" {
 		ext := strings.ToLower(strings.TrimPrefix(path.Ext(name), "."))
 		if ext != w.extLower {
 			return false
 		}
+	}
+	if w.opts.MatchPath {
+		return w.patternFn(fullPath)
 	}
 	return w.patternFn(name)
 }
