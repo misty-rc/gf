@@ -1,0 +1,17 @@
+# Binary
+gf
+gf.exe
+
+# Test binaries
+*.test
+*.test.exe
+
+# Build output
+dist/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Environment
+.env
