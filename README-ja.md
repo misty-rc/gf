@@ -140,4 +140,4 @@ gf/
 
 ## ライセンス
 
-MIT
+[MIT License](LICENSE) — Copyright (c) 2026 misty
