@@ -94,7 +94,12 @@ func main() {
 	case 0:
 		// パターンなし、カレントディレクトリ
 	case 1:
-		pattern = args[0]
+		// 引数が存在するディレクトリならルートとして扱う
+		if info, err := os.Stat(args[0]); err == nil && info.IsDir() {
+			root = args[0]
+		} else {
+			pattern = args[0]
+		}
 	case 2:
 		pattern = args[0]
 		root = args[1]
