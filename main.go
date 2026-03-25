@@ -16,32 +16,45 @@ const usage = `Usage: gf [options] [pattern] [directory]
 Search for files by name under a directory tree.
 
 Arguments:
-  pattern     Glob pattern (default) or regex with -r. Matches filename only.
+  pattern     Glob or regex (-r) pattern matched against filename only.
+              Glob without special chars (*, ?, [) is treated as substring match.
               If omitted, matches everything.
   directory   Root directory to search (default: current directory).
 
 Options:
+  -r, --regex         Treat pattern as regular expression
+  -t, --type  f|d     Filter by type: f=file, d=directory
+  -e, --ext   EXT     Filter by file extension, without dot (e.g. go, png)
+      --hidden        Include hidden files and directories (dot-prefixed)
+      --depth N       Maximum search depth; 0 = unlimited (default: 0)
+      --sort          Sort results alphabetically
+
+Examples:
+  gf '*.go'                     # .go files (glob)
+  gf main                       # files whose name contains "main"
+  gf -r '^test.*\.go$'          # regex: test*.go
+  gf -t f -e go --sort ./src    # sorted .go files under src/
+  gf --hidden --depth 2 .       # include hidden, max 2 levels deep
 `
 
 func main() {
 	var (
-		useRegex = flag.Bool("r", false, "Treat pattern as regular expression")
-		fileType = flag.String("t", "", "Filter by type: f=file, d=directory")
-		ext      = flag.String("e", "", "Filter by file extension (without dot, e.g. go)")
-		hidden   = flag.Bool("hidden", false, "Include hidden files and directories")
-		maxDepth = flag.Int("depth", 0, "Maximum search depth (0=unlimited)")
-		doSort   = flag.Bool("sort", false, "Sort results alphabetically")
+		useRegex = flag.Bool("r", false, "")
+		fileType = flag.String("t", "", "")
+		ext      = flag.String("e", "", "")
+		hidden   = flag.Bool("hidden", false, "")
+		maxDepth = flag.Int("depth", 0, "")
+		doSort   = flag.Bool("sort", false, "")
 	)
 
 	flag.CommandLine.Usage = func() {
 		fmt.Fprint(os.Stderr, usage)
-		flag.PrintDefaults()
 	}
 
 	// long-form aliases
-	flag.BoolVar(useRegex, "regex", false, "Treat pattern as regular expression")
-	flag.StringVar(fileType, "type", "", "Filter by type: f=file, d=directory")
-	flag.StringVar(ext, "ext", "", "Filter by file extension (without dot)")
+	flag.BoolVar(useRegex, "regex", false, "")
+	flag.StringVar(fileType, "type", "", "")
+	flag.StringVar(ext, "ext", "", "")
 
 	// bool フラグ名のセットを構築する（値を取らないフラグを判別するため）。
 	boolFlags := map[string]bool{}
