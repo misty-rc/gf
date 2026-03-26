@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/misty/gf/search"
+	"github.com/misty-rc/gf/search"
 )
 
 const usage = `Usage: gf [options] [pattern] [directory]

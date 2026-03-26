@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/misty/gf/search"
+	"github.com/misty-rc/gf/search"
 )
 
 // テスト用ディレクトリ構造:

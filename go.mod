@@ -1,3 +1,3 @@
-module github.com/misty/gf
+module github.com/misty-rc/gf
 
 go 1.25.5
