@@ -7,9 +7,26 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/misty-rc/gf/search"
 )
+
+// stringSlice は --exclude のように複数回指定できるフラグの値を受け取る型。
+type stringSlice []string
+
+func (s *stringSlice) String() string     { return strings.Join(*s, ", ") }
+func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
+
+// parseDate は "YYYY-MM-DD" または "YYYY-MM-DDTHH:MM:SS" をローカル時刻として解析する。
+func parseDate(s string) (time.Time, error) {
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02"} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("invalid date %q: use YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS", s)
+}
 
 const usage = `Usage: gf [options] [pattern] [directory]
 
@@ -29,14 +46,24 @@ Options:
       --hidden        Include hidden files and directories (dot-prefixed)
       --depth N       Maximum search depth; 0 = unlimited (default: 0)
       --sort          Sort results alphabetically
+  -n, --limit N       Stop after N results (0 = unlimited)
+      --exclude PAT   Exclude entries matching PAT (glob); repeatable
+      --newer DATE    Modified after DATE  (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+      --older DATE    Modified before DATE
+      --created-after  DATE  Created after DATE  (Windows/macOS only)
+      --created-before DATE  Created before DATE (Windows/macOS only)
 
 Examples:
-  gf '*.go'                     # .go files (glob)
-  gf main                       # files whose name contains "main"
-  gf -p ドールズ                # files under paths containing "ドールズ"
-  gf -r '^test.*\.go$'          # regex: test*.go
-  gf -t f -e go --sort ./src    # sorted .go files under src/
-  gf --hidden --depth 2 .       # include hidden, max 2 levels deep
+  gf '*.go'                               # .go files (glob)
+  gf main                                 # files whose name contains "main"
+  gf -p ドールズ                          # files under paths containing "ドールズ"
+  gf -r '^test.*\.go$'                    # regex: test*.go
+  gf -t f -e go --sort ./src              # sorted .go files under src/
+  gf --hidden --depth 2 .                 # include hidden, max 2 levels deep
+  gf '*.go' -n 10                         # first 10 .go files
+  gf --exclude node_modules --exclude dist  # skip common build dirs
+  gf --newer 2024-01-01                   # modified after 2024-01-01
+  gf '*.go' --newer 2024-06-01 --older 2025-01-01  # modified in range
 `
 
 func main() {
@@ -48,6 +75,12 @@ func main() {
 		hidden    = flag.Bool("hidden", false, "")
 		maxDepth  = flag.Int("depth", 0, "")
 		doSort    = flag.Bool("sort", false, "")
+		limit          = flag.Int("n", 0, "")
+		exclude        stringSlice
+		newerStr       = flag.String("newer", "", "")
+		olderStr       = flag.String("older", "", "")
+		createdAfterStr  = flag.String("created-after", "", "")
+		createdBeforeStr = flag.String("created-before", "", "")
 	)
 
 	flag.CommandLine.Usage = func() {
@@ -59,6 +92,8 @@ func main() {
 	flag.BoolVar(matchPath, "path", false, "")
 	flag.StringVar(fileType, "type", "", "")
 	flag.StringVar(ext, "ext", "", "")
+	flag.IntVar(limit, "limit", 0, "")
+	flag.Var(&exclude, "exclude", "")
 
 	// bool フラグ名のセットを構築する（値を取らないフラグを判別するため）。
 	boolFlags := map[string]bool{}
@@ -108,6 +143,27 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: --depth must be non-negative")
 		os.Exit(2)
 	}
+	if *limit < 0 {
+		fmt.Fprintln(os.Stderr, "error: --limit must be non-negative")
+		os.Exit(2)
+	}
+
+	// 日時フラグをパース
+	parseDateFlag := func(s, name string) time.Time {
+		if s == "" {
+			return time.Time{}
+		}
+		t, err := parseDate(s)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: --%s: %v\n", name, err)
+			os.Exit(2)
+		}
+		return t
+	}
+	modifiedAfter  := parseDateFlag(*newerStr, "newer")
+	modifiedBefore := parseDateFlag(*olderStr, "older")
+	createdAfter   := parseDateFlag(*createdAfterStr, "created-after")
+	createdBefore  := parseDateFlag(*createdBeforeStr, "created-before")
 
 	pattern := ""
 	root := "."
@@ -137,13 +193,19 @@ func main() {
 	}
 
 	opts := search.Options{
-		Pattern:   pattern,
-		Regex:     *useRegex,
-		MatchPath: *matchPath,
-		Type:      *fileType,
-		Ext:       *ext,
-		Hidden:    *hidden,
-		MaxDepth:  *maxDepth,
+		Pattern:        pattern,
+		Regex:          *useRegex,
+		MatchPath:      *matchPath,
+		Type:           *fileType,
+		Ext:            *ext,
+		Hidden:         *hidden,
+		MaxDepth:       *maxDepth,
+		Limit:          *limit,
+		Exclude:        []string(exclude),
+		ModifiedAfter:  modifiedAfter,
+		ModifiedBefore: modifiedBefore,
+		CreatedAfter:   createdAfter,
+		CreatedBefore:  createdBefore,
 	}
 
 	results := make(chan string, 8192)

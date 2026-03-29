@@ -54,3 +54,17 @@ func compilePattern(opts Options) (func(string) bool, error) {
 func hasGlobChars(p string) bool {
 	return strings.ContainsAny(p, "*?[")
 }
+
+// compileExcludes は除外パターン群をマッチ関数のスライスにコンパイルする。
+// パターン形式はグロブ（部分一致含む）のみ。正規表現は不可。
+func compileExcludes(patterns []string) ([]func(string) bool, error) {
+	fns := make([]func(string) bool, 0, len(patterns))
+	for _, p := range patterns {
+		fn, err := compilePattern(Options{Pattern: p, Regex: false})
+		if err != nil {
+			return nil, err
+		}
+		fns = append(fns, fn)
+	}
+	return fns, nil
+}

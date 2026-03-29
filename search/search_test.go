@@ -557,3 +557,150 @@ func TestCombined_AllFilters(t *testing.T) {
 		t.Errorf("want [subdir/sub.go], got %v", got)
 	}
 }
+
+// ---- Limit ------------------------------------------------------------------
+
+func TestLimit_Basic(t *testing.T) {
+	root := makeTestTree(t)
+	// 全11件のうち3件だけ返すこと
+	got := runSearch(t, root, search.Options{Limit: 3})
+	if len(got) != 3 {
+		t.Errorf("want 3, got %d: %v", len(got), got)
+	}
+}
+
+func TestLimit_Zero_Unlimited(t *testing.T) {
+	root := makeTestTree(t)
+	// Limit=0 は無制限（全11件）
+	got := runSearch(t, root, search.Options{Limit: 0})
+	if len(got) != 11 {
+		t.Errorf("want 11, got %d: %v", len(got), got)
+	}
+}
+
+func TestLimit_LargerThanTotal(t *testing.T) {
+	root := makeTestTree(t)
+	// Limit が総件数を超える場合は全件返す
+	got := runSearch(t, root, search.Options{Limit: 100})
+	if len(got) != 11 {
+		t.Errorf("want 11, got %d: %v", len(got), got)
+	}
+}
+
+func TestLimit_WithPattern(t *testing.T) {
+	root := makeTestTree(t)
+	// *.go は4件ヒットするが limit=2 で打ち切り
+	got := runSearch(t, root, search.Options{Pattern: "*.go", Limit: 2})
+	if len(got) != 2 {
+		t.Errorf("want 2, got %d: %v", len(got), got)
+	}
+	for _, p := range got {
+		if !strings.HasSuffix(p, ".go") {
+			t.Errorf("unexpected non-.go result: %s", p)
+		}
+	}
+}
+
+// ---- Exclude ----------------------------------------------------------------
+
+func TestExclude_ExactName(t *testing.T) {
+	root := makeTestTree(t)
+	got := runSearch(t, root, search.Options{Exclude: []string{"main.go"}})
+	for _, p := range got {
+		if filepath.Base(p) == "main.go" {
+			t.Errorf("main.go should be excluded: %s", p)
+		}
+	}
+	// 全11件から main.go の1件を除いた10件
+	if len(got) != 10 {
+		t.Errorf("want 10, got %d: %v", len(got), got)
+	}
+}
+
+func TestExclude_Glob(t *testing.T) {
+	root := makeTestTree(t)
+	// *.go を除外 → .go ファイル4件が消える
+	got := runSearch(t, root, search.Options{Exclude: []string{"*.go"}})
+	for _, p := range got {
+		if strings.HasSuffix(p, ".go") {
+			t.Errorf(".go file should be excluded: %s", p)
+		}
+	}
+	// 11件 - .goファイル4件 = 7件
+	if len(got) != 7 {
+		t.Errorf("want 7, got %d: %v", len(got), got)
+	}
+}
+
+func TestExclude_Directory_SkipsSubtree(t *testing.T) {
+	root := makeTestTree(t)
+	// "subdir" を除外するとサブツリー全体（subdir, sub.go, sub.txt, deep, deep.go）が消える
+	got := runSearch(t, root, search.Options{Exclude: []string{"subdir"}})
+	for _, p := range got {
+		if strings.Contains(p, "subdir") {
+			t.Errorf("subdir subtree should be excluded: %s", p)
+		}
+	}
+	// 11件 - subdir(1) - subdir/sub.go(1) - subdir/sub.txt(1)
+	//      - subdir/deep(1) - subdir/deep/deep.go(1) = 6件
+	if len(got) != 6 {
+		t.Errorf("want 6, got %d: %v", len(got), got)
+	}
+}
+
+func TestExclude_Multiple(t *testing.T) {
+	root := makeTestTree(t)
+	// *.go と *.txt を両方除外
+	got := runSearch(t, root, search.Options{Exclude: []string{"*.go", "*.txt"}})
+	for _, p := range got {
+		if strings.HasSuffix(p, ".go") || strings.HasSuffix(p, ".txt") {
+			t.Errorf("excluded extension found: %s", p)
+		}
+	}
+	// 11件 - .go(4件) - .txt(2件) = 5件
+	if len(got) != 5 {
+		t.Errorf("want 5, got %d: %v", len(got), got)
+	}
+}
+
+func TestExclude_WithPattern(t *testing.T) {
+	root := makeTestTree(t)
+	// pattern="*.go" かつ exclude="main*" → main.go が除外され3件
+	got := runSearch(t, root, search.Options{
+		Pattern: "*.go",
+		Exclude: []string{"main*"},
+	})
+	for _, p := range got {
+		if strings.HasPrefix(filepath.Base(p), "main") {
+			t.Errorf("main* should be excluded: %s", p)
+		}
+		if !strings.HasSuffix(p, ".go") {
+			t.Errorf("non-.go result: %s", p)
+		}
+	}
+	// file.go, subdir/sub.go, subdir/deep/deep.go = 3件
+	if len(got) != 3 {
+		t.Errorf("want 3, got %d: %v", len(got), got)
+	}
+}
+
+func TestCombined_LimitAndExclude(t *testing.T) {
+	root := makeTestTree(t)
+	// *.go から main* を除外して limit=2
+	got := runSearch(t, root, search.Options{
+		Pattern: "*.go",
+		Exclude: []string{"main*"},
+		Limit:   2,
+	})
+	if len(got) != 2 {
+		t.Errorf("want 2, got %d: %v", len(got), got)
+	}
+	for _, p := range got {
+		if strings.HasPrefix(filepath.Base(p), "main") {
+			t.Errorf("main* should be excluded: %s", p)
+		}
+		if !strings.HasSuffix(p, ".go") {
+			t.Errorf("non-.go result: %s", p)
+		}
+	}
+}

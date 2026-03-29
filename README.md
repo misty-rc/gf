@@ -52,6 +52,8 @@ gf [options] [pattern] [directory]
 | | `--hidden` | Include hidden files and directories (dot-prefixed) |
 | | `--depth N` | Maximum search depth; `0` = unlimited (default: `0`) |
 | | `--sort` | Sort results alphabetically |
+| `-n N` | `--limit N` | Stop after N results; `0` = unlimited (default: `0`) |
+| | `--exclude PAT` | Exclude entries matching glob PAT; repeatable |
 
 ## Examples
 
@@ -76,6 +78,15 @@ gf -p -r 'src/.*_test\.go$'      # test files under src/ (regex on full path)
 # Hidden files & depth
 gf --hidden '.env'               # find .env files
 gf --depth 2 '*.md' ./docs       # .md files up to 2 levels deep
+
+# Limit
+gf '*.log' -n 5                  # first 5 .log files
+gf -n 1 'main.go'                # stop at first match
+
+# Exclude
+gf '*.go' --exclude '*_test*'              # skip test files
+gf --exclude node_modules --exclude dist   # skip build dirs
+gf '*.ts' --exclude '*.d.ts' ./src        # TypeScript, no declaration files
 ```
 
 ## Pattern Matching
